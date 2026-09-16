@@ -7,8 +7,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GROQ_API_KEY
+      - key: GEMINI_API_KEY
         sync: false          # set this in the dashboard, never in the repo
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
       - key: DATA_DIR
         value: /var/data
       - key: PYTHON_VERSION

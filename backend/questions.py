@@ -78,7 +78,7 @@ def generate_questions(
     system_prompt: str = QUESTION_SYSTEM,
 ) -> List[dict]:
     """call_llm(prompt, system) -> str. Injected so this module stays
-    independent of main.py's Groq client (avoids a circular import)."""
+    independent of main.py's Gemini client (avoids a circular import)."""
     count = normalize_count(count)
     collected: List[dict] = []
     remaining = count

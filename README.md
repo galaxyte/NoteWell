@@ -6,9 +6,9 @@ Turn a YouTube link, PDF, Word document, audio file, or pasted text into structu
 study notes — then chat with them, generate practice questions, and export everything
 to Markdown, DOCX, or PDF.
 
-Built to run on a free stack: Groq for the LLM, local Whisper for transcription, local
-embeddings for retrieval, SQLite and ChromaDB for storage. No paid APIs beyond a free
-Groq key.
+Built to run on a free stack: Gemini for the LLM, local Whisper for transcription,
+local embeddings for retrieval, SQLite and ChromaDB for storage. No paid APIs beyond
+a Gemini API key.
 
 > **About the demo:** it's on Render's free tier, so the first request after a period
 > of inactivity takes a minute or so while the server wakes and reloads its models.
@@ -94,7 +94,7 @@ vtn/
 ### Prerequisites
 
 - Python 3.10+
-- A free Groq API key from [console.groq.com](https://console.groq.com)
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
 - **`ffmpeg` on your system PATH.** Not installed via pip — it's a system binary, needed
   for trimming audio when you request a custom time range. `winget install ffmpeg`
   (Windows), `brew install ffmpeg` (macOS), or `apt-get install ffmpeg` (Linux). After
@@ -120,7 +120,8 @@ copy .env.example .env         # Windows
 ```
 
 ```
-GROQ_API_KEY=gsk_your_real_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 The Whisper settings in `.env.example` (`WHISPER_MODEL_SIZE`, `WHISPER_DEVICE`,
@@ -270,7 +271,7 @@ The live demo runs on Render's free tier:
   (the `ffmpeg` install is required for custom time-range trimming — Render's default
   image doesn't include it)
 - **Start:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-- **Environment:** `GROQ_API_KEY`
+- **Environment:** `GEMINI_API_KEY`
 
 `requirements.txt` pins the CPU-only PyTorch index. Without that line, Linux pulls the
 CUDA build — about 2.5 GB of NVIDIA libraries this app never touches, which won't fit in
@@ -284,12 +285,10 @@ a mounted disk, or an external Postgres, would be needed to keep anything.
 
 ## Troubleshooting
 
-**"GROQ_API_KEY is not set"** — `.env` is missing, or it isn't inside `backend/`.
+**"GEMINI_API_KEY is not set"** — `.env` is missing, or it isn't inside `backend/`.
 
-**`groq.NotFoundError: model_not_found` / 404 from Groq** — the pinned `GROQ_MODEL` was
-deprecated. Groq periodically retires free-tier models on a schedule outside this app's
-control; check [console.groq.com/docs/deprecations](https://console.groq.com/docs/deprecations)
-for the current recommended replacement and update `GROQ_MODEL` in `main.py`.
+**Gemini model/API errors** — confirm `GEMINI_API_KEY` is valid and that
+`GEMINI_MODEL` names an available Gemini model. The default is `gemini-2.5-flash`.
 
 **`FileNotFoundError: [WinError 2]` / "ffmpeg not recognized"** — `ffmpeg` isn't on
 `PATH`. Install it (see Prerequisites), then open a genuinely new terminal — and restart
@@ -348,5 +347,5 @@ for a `[rag]` line and run `POST /api/reindex`.
 - Streaming chat replies
 - Interactive quiz mode — answer questions in-app rather than reading a list
 - Flashcards generated from the Key Terms section
-- Groq's hosted Whisper instead of local, which would cut the container size
-  dramatically and make audio viable on free hosting
+- Hosted transcription instead of local Whisper, which would cut the container size
+  dramatically and make audio more viable on free hosting

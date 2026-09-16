@@ -32,7 +32,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from groq import Groq
+from google import genai
+from google.genai import types
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
@@ -53,7 +54,6 @@ from learning_modes import (
 )
 from transcription import (
     transcribe_video_with_whisper,
-    transcribe_video_with_groq,
     transcribe_audio,
 )
 from timeutils import parse_timestamp, format_timestamp, pick_interval_seconds
@@ -78,15 +78,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
     raise RuntimeError(
-        "GROQ_API_KEY is not set. Create a .env file (copy .env.example) and "
-        "paste your free Groq API key into it before starting the server."
+        "GEMINI_API_KEY is not set. Create a .env file and paste your Gemini "
+        "API key into it before starting the server."
     )
 
-client = Groq(api_key=GROQ_API_KEY)
-GROQ_MODEL = "openai/gpt-oss-120b"  # free tier, fast, good quality
+client = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 app = FastAPI(title="Video-to-Notes AI")
 
@@ -195,13 +195,13 @@ def fetch_transcript(
     start_seconds: Optional[float] = None, end_seconds: Optional[float] = None,
     progress_callback: Optional[Callable[[float, float], None]] = None,
 ) -> tuple[List[dict], str]:
-    """Try YouTube captions first (free + instant), then Groq's hosted
-    Whisper, then fall back to fully-local Whisper as a last resort.
+    """Try YouTube captions first (free + instant), then fall back to
+    fully-local Whisper as a last resort.
 
     Returns (segments, origin) where segments is a list of
     {"text": str, "start": float, "duration": float} dicts (NOT a flattened
     string anymore — V1 threw this timing away, V2 needs it for clickable
-    timestamps) and origin is "captions", "whisper_groq", or "whisper".
+    timestamps) and origin is "captions" or "whisper".
 
     If start_seconds/end_seconds are given, the returned segments are limited
     to that range. For captions this is a simple filter (the full transcript
@@ -233,36 +233,12 @@ def fetch_transcript(
     except Exception as e:
         print(f"Unexpected transcript error: {e}")
 
-    # Groq's hosted Whisper first: faster than local CPU inference (runs on
-    # Groq's own hardware) AND more accurate (large-v3, the full model —
-    # local Whisper here runs a smaller model specifically to stay fast
-    # enough on a free-tier CPU box). Same GROQ_API_KEY already used for the
-    # LLM calls above, no separate signup needed.
-    #
-    # No progress_callback for this path -- Groq's endpoint is one blocking
-    # call, not a segment-by-segment generator, so there's no incremental
-    # progress to report while it's running (see transcription.py). The
-    # caller's "transcribing" stage just jumps to 100% once this returns,
-    # same as the captions path already does today.
-    print("Trying Groq's hosted Whisper...")
-    try:
-        result = transcribe_video_with_groq(
-            video_url, start_seconds=start_seconds, end_seconds=end_seconds,
-        )
-        if result.segments:
-            origin = "whisper_groq"
-        else:
-            raise ValueError("Groq Whisper returned no segments.")
-    except Exception as e:
-        # Covers: Groq API errors, rate limits, network issues, or an empty
-        # result -- any of these fall back to the fully-local path rather
-        # than failing the whole request outright.
-        print(f"Groq Whisper failed ({e}), falling back to local Whisper...")
-        result = transcribe_video_with_whisper(
-            video_url, start_seconds=start_seconds, end_seconds=end_seconds,
-            progress_callback=progress_callback,
-        )
-        origin = "whisper"
+    print("Trying local Whisper...")
+    result = transcribe_video_with_whisper(
+        video_url, start_seconds=start_seconds, end_seconds=end_seconds,
+        progress_callback=progress_callback,
+    )
+    origin = "whisper"
 
     if not result.segments:
         raise HTTPException(
@@ -353,16 +329,16 @@ def chunk_text(text: str, chunk_words: int = CHUNK_WORDS) -> List[str]:
     ]
 
 
-def call_groq(prompt: str, system: str) -> str:
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,
+def call_gemini(prompt: str, system: str, temperature: float = 0.3) -> str:
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=temperature,
+        ),
     )
-    return response.choices[0].message.content
+    return response.text or ""
 
 
 def summarize_chunk(
@@ -397,7 +373,7 @@ def summarize_chunk(
         "bullet-point summaries. You never drop a specific detail in favor of "
         "a general paraphrase."
     )
-    return call_groq(prompt, system=system)
+    return call_gemini(prompt, system=system)
 
 
 def write_section(chunk_text: str, index: int, total: int, learning_mode: str, start: float, end: float) -> str:
@@ -418,7 +394,7 @@ def write_section(chunk_text: str, index: int, total: int, learning_mode: str, s
         "You write one final, polished section of Markdown study notes -- not a summary, not a draft.",
         learning_mode,
     )
-    return call_groq(prompt, system=system)
+    return call_gemini(prompt, system=system)
 
 
 def write_opening(sections_markdown: str, learning_mode: str) -> str:
@@ -432,7 +408,7 @@ def write_opening(sections_markdown: str, learning_mode: str) -> str:
         "You write the opening of a set of Markdown study notes, given the notes' already-finished sections.",
         learning_mode,
     )
-    return call_groq(prompt, system=system)
+    return call_gemini(prompt, system=system)
 
 
 def write_closing(sections_markdown: str, learning_mode: str) -> str:
@@ -446,7 +422,7 @@ def write_closing(sections_markdown: str, learning_mode: str) -> str:
         "You write the closing of a set of Markdown study notes, given the notes' already-finished sections.",
         learning_mode,
     )
-    return call_groq(prompt, system=system)
+    return call_gemini(prompt, system=system)
 
 def _run_video_generation_job(
     *,
@@ -466,8 +442,7 @@ def _run_video_generation_job(
     of waiting for the whole note. Also reports live transcription progress
     via a throttled callback passed into fetch_transcript() -- only actually
     incremental when the local-Whisper path is the one that ends up running;
-    see fetch_transcript()'s docstring for why the Groq path can't report
-    partial progress.
+    progress.
     """
     try:
         last_report_time = [0.0]   # mutable holder so the closure can update it
@@ -569,7 +544,7 @@ def build_notes(chunk_summaries: List[str], learning_mode: str) -> str:
         "You produce clean, well-structured Markdown study notes.",
         learning_mode,
     )
-    return call_groq(prompt, system=system)
+    return call_gemini(prompt, system=system)
 
 
 # ---------------------------------------------------------------------------
@@ -956,7 +931,7 @@ def _save_edited_note(note_id: int, title: str, sections: List[dict]) -> str:
 @app.post("/api/notes/{note_id}/sections/{index}/regenerate")
 def regenerate_section(note_id: int, index: int, req: SectionRegenerateRequest):
     """
-    Scoped LLM regenerate of ONE section -- one Groq call, not a full-note
+    Scoped LLM regenerate of ONE section -- one Gemini call, not a full-note
     regeneration. The heading line (including any [MM:SS–MM:SS] bracket) is
     split off and never sent to the model for rewriting; only the body is
     regenerated, then reassembled as `heading + new_body`. This guarantees a
@@ -1008,9 +983,9 @@ def regenerate_section(note_id: int, index: int, req: SectionRegenerateRequest):
     )
 
     try:
-        new_body = call_groq(prompt, system=system)
+        new_body = call_gemini(prompt, system=system)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Regenerate request to Groq failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Regenerate request to Gemini failed: {exc}") from exc
 
     sections[index]["markdown_text"] = f"{heading_line}\n\n{new_body.strip()}"
     new_markdown = _save_edited_note(note_id, note["title"], sections)
@@ -1026,7 +1001,7 @@ def regenerate_section(note_id: int, index: int, req: SectionRegenerateRequest):
 @app.patch("/api/notes/{note_id}/sections/{index}")
 def edit_section(note_id: int, index: int, req: SectionEditRequest):
     """
-    Pure manual edit -- no LLM call, no Groq cost. The user's text replaces
+    Pure manual edit -- no LLM call, no Gemini cost. The user's text replaces
     the section verbatim, heading included, so (unlike regenerate) this CAN
     change or remove the heading's [MM:SS–MM:SS] bracket. That's allowed on
     purpose: it just means the next extract_timed_sections() pass skips this
@@ -1124,7 +1099,7 @@ def generate_questions_endpoint(req: QuestionsRequest):
             markdown=note["structured_markdown"],
             title=note["title"],
             count=count,
-            call_llm=call_groq,
+            call_llm=call_gemini,
             system_prompt=system,
         )
     except Exception as exc:
@@ -1314,20 +1289,19 @@ def chat(req: ChatRequest):
     system_prompt = apply_learning_mode(system_prompt, learning_mode)
 
     history = db.get_chat_history(session_id)[-CHAT_HISTORY_TURNS:]
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend({"role": m["role"], "content": m["content"]} for m in history)
-    messages.append({"role": "user", "content": message})
+    transcript = "\n".join(
+        f"{m['role'].capitalize()}: {m['content']}" for m in history
+    )
+    prompt = (
+        f"Conversation so far:\n{transcript}\n\nUser: {message}\nAssistant:"
+        if transcript
+        else message
+    )
 
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.4,
-        )
+        reply = call_gemini(prompt, system=system_prompt, temperature=0.4)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Chat request to Groq failed: {exc}") from exc
-
-    reply = response.choices[0].message.content
+        raise HTTPException(status_code=502, detail=f"Chat request to Gemini failed: {exc}") from exc
 
     db.save_chat_message(session_id, "user", message)
     db.save_chat_message(session_id, "assistant", reply)
